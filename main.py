@@ -17,7 +17,7 @@ app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
     allow_credentials=False,
-    allow_methods=["*"],
+    allow_methods=["GET", "POST", "DELETE", "OPTIONS"],
     allow_headers=["*"],
 )
 
@@ -57,7 +57,7 @@ def send_telegram(token: str, chat_id: str, message: str):
 def scan_linkedin(keyword: str, cookie: str):
     headers = {
         "cookie": f"li_at={cookie}",
-        "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
         "accept": "application/vnd.linkedin.normalized+json+2.1",
         "accept-language": "en-US,en;q=0.9",
         "x-restli-protocol-version": "2.0.0",
@@ -77,13 +77,11 @@ def monitor_worker(monitor_data: dict):
     monitor_id = monitor_data["id"]
     seen_posts = set()
     print(f"Monitor {monitor_id} started")
-
     send_telegram(
         monitor_data["telegram_token"],
         monitor_data["telegram_chat_id"],
         f"🟢 <b>LinkedAlert Active!</b>\n\nMonitor: {monitor_data['name']}\nKeywords: {', '.join(monitor_data['keywords'])}\nLocation: {monitor_data['location']}\n\nScanning every {monitor_data['interval_minutes']} minutes..."
     )
-
     while monitor_id in active_monitors and active_monitors[monitor_id]["running"]:
         for keyword in monitor_data["keywords"]:
             try:
@@ -124,13 +122,11 @@ def monitor_worker(monitor_data: dict):
                         }).execute()
             except Exception as e:
                 print(f"Scan error for keyword {keyword}: {e}")
-
         interval = monitor_data.get("interval_minutes", 15) * 60
         for _ in range(interval):
             if monitor_id not in active_monitors or not active_monitors[monitor_id]["running"]:
                 break
             time.sleep(1)
-
     print(f"Monitor {monitor_id} stopped")
 
 @app.get("/")
