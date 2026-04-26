@@ -14,6 +14,18 @@ from supabase import create_client, Client
 app = FastAPI(title="LinkedAlert API")
 
 app.add_middleware(
+    from starlette.middleware.base import BaseHTTPMiddleware
+from starlette.requests import Request
+
+class CORSManualMiddleware(BaseHTTPMiddleware):
+    async def dispatch(self, request: Request, call_next):
+        response = await call_next(request)
+        response.headers["Access-Control-Allow-Origin"] = "*"
+        response.headers["Access-Control-Allow-Methods"] = "GET, POST, DELETE, OPTIONS"
+        response.headers["Access-Control-Allow-Headers"] = "*"
+        return response
+
+app.add_middleware(CORSManualMiddleware)
     CORSMiddleware,
     allow_origins=["*"],
     allow_credentials=False,
