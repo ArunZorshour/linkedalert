@@ -60,7 +60,7 @@ def monitor_worker(monitor_data: dict):
                 if not data:
                     continue
                 for item in data.get("elements", [])[:5]:
-                    post_url = item.get("navigationUrl", "")
+                    post_url = item.get("navigationUrl", "") or item.get("linkedinUrl", "")
                     uid = hashlib.md5(str(item.get("targetUrn", post_url)).encode()).hexdigest()
                     if uid in seen_posts:
                         continue
@@ -177,7 +177,7 @@ async def apify_webhook(request: Request):
                 author = post.get("author", {})
                 name = author.get("name", "Unknown") if isinstance(author, dict) else "Unknown"
                 text = post.get("text", "")[:300]
-                post_url = post.get("url", "")
+                post_url = post.get("linkedinUrl", "") or post.get("url", "")
                 search_query = post.get("searchQuery", {})
                 keyword = search_query.get("query", "") if isinstance(search_query, dict) else ""
 
