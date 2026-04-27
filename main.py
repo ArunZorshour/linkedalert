@@ -153,25 +153,39 @@ def root():
 async def apify_webhook(request: Request):
     try:
         data = await request.json()
+        print(f"Webhook received: {str(data)[:200]}")
+
         resource = data.get("resource", {})
+        if isinstance(resource, str):
+            resource = json.loads(resource)
+
         dataset_id = resource.get("defaultDatasetId", "")
+        print(f"Dataset ID: {dataset_id}")
+
         if not dataset_id:
             return {"status": "no dataset"}
+
         url = f"https://api.apify.com/v2/datasets/{dataset_id}/items?token={APIFY_TOKEN}&limit=20"
         r = requests.get(url, timeout=15)
         posts = r.json()
+        print(f"Posts fetched: {len(posts)}")
+
         if supabase:
             monitors = supabase.table("monitors").select("*").eq("status", "active").execute().data
             seen = set()
             for post in posts[:20]:
-                name = post.get("author", {}).get("name", "Unknown")
+                author = post.get("author", {})
+                name = author.get("name", "Unknown") if isinstance(author, dict) else "Unknown"
                 text = post.get("text", "")[:300]
                 post_url = post.get("url", "")
-                keyword = post.get("searchQuery", {}).get("query", "")
+                search_query = post.get("searchQuery", {})
+                keyword = search_query.get("query", "") if isinstance(search_query, dict) else ""
+
                 uid = hashlib.md5(str(post_url).encode()).hexdigest()
                 if uid in seen:
                     continue
                 seen.add(uid)
+
                 msg = (
                     f"🚨 <b>New LinkedIn Post!</b>\n\n"
                     f"👤 <b>Name:</b> {name}\n"
@@ -181,8 +195,11 @@ async def apify_webhook(request: Request):
                 )
                 if post_url:
                     msg += f"\n🔗 <a href='{post_url}'>View Post</a>"
+
                 for monitor in monitors:
                     send_telegram(monitor["telegram_token"], monitor["telegram_chat_id"], msg)
+                    print(f"Telegram sent for: {name}")
+
                 if supabase:
                     for monitor in monitors:
                         supabase.table("alerts").insert({
@@ -194,9 +211,12 @@ async def apify_webhook(request: Request):
                             "post_url": post_url,
                             "created_at": datetime.now().isoformat()
                         }).execute()
+
         return {"status": "ok", "posts_processed": len(posts)}
     except Exception as e:
         print(f"Webhook error: {e}")
+        import traceback
+        print(traceback.format_exc())
         return {"status": "error", "message": str(e)}
 
 @app.post("/monitors")
