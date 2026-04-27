@@ -1,4 +1,4 @@
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from typing import List
@@ -14,6 +14,7 @@ from contextlib import asynccontextmanager
 
 SUPABASE_URL = os.environ.get("SUPABASE_URL", "")
 SUPABASE_KEY = os.environ.get("SUPABASE_KEY", "")
+APIFY_TOKEN = os.environ.get("APIFY_TOKEN", "")
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY) if SUPABASE_URL else None
 
 active_monitors = {}
@@ -147,6 +148,56 @@ class MonitorCreate(BaseModel):
 @app.get("/")
 def root():
     return {"status": "LinkedAlert API running", "version": "2.0.0"}
+
+@app.post("/apify-webhook")
+async def apify_webhook(request: Request):
+    try:
+        data = await request.json()
+        resource = data.get("resource", {})
+        dataset_id = resource.get("defaultDatasetId", "")
+        if not dataset_id:
+            return {"status": "no dataset"}
+        url = f"https://api.apify.com/v2/datasets/{dataset_id}/items?token={APIFY_TOKEN}&limit=20"
+        r = requests.get(url, timeout=15)
+        posts = r.json()
+        if supabase:
+            monitors = supabase.table("monitors").select("*").eq("status", "active").execute().data
+            seen = set()
+            for post in posts[:20]:
+                name = post.get("author", {}).get("name", "Unknown")
+                text = post.get("text", "")[:300]
+                post_url = post.get("url", "")
+                keyword = post.get("searchQuery", {}).get("query", "")
+                uid = hashlib.md5(str(post_url).encode()).hexdigest()
+                if uid in seen:
+                    continue
+                seen.add(uid)
+                msg = (
+                    f"🚨 <b>New LinkedIn Post!</b>\n\n"
+                    f"👤 <b>Name:</b> {name}\n"
+                    f"🔍 <b>Keyword:</b> {keyword}\n"
+                    f"📝 <b>Post:</b> {text}...\n"
+                    f"⏰ <b>Time:</b> {datetime.now().strftime('%d %b %Y, %I:%M %p')}"
+                )
+                if post_url:
+                    msg += f"\n🔗 <a href='{post_url}'>View Post</a>"
+                for monitor in monitors:
+                    send_telegram(monitor["telegram_token"], monitor["telegram_chat_id"], msg)
+                if supabase:
+                    for monitor in monitors:
+                        supabase.table("alerts").insert({
+                            "monitor_id": monitor["id"],
+                            "user_id": monitor["user_id"],
+                            "name": name,
+                            "keyword": keyword,
+                            "post_text": text,
+                            "post_url": post_url,
+                            "created_at": datetime.now().isoformat()
+                        }).execute()
+        return {"status": "ok", "posts_processed": len(posts)}
+    except Exception as e:
+        print(f"Webhook error: {e}")
+        return {"status": "error", "message": str(e)}
 
 @app.post("/monitors")
 def create_monitor(monitor: MonitorCreate):
