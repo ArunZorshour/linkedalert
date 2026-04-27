@@ -7,36 +7,16 @@ import time
 import threading
 import hashlib
 import os
+import json
 from datetime import datetime
 from supabase import create_client, Client
-
-app = FastAPI(title="LinkedAlert API")
-
-origins = ["*"]
-
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=origins,
-    allow_credentials=False,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+from contextlib import asynccontextmanager
 
 SUPABASE_URL = os.environ.get("SUPABASE_URL", "")
 SUPABASE_KEY = os.environ.get("SUPABASE_KEY", "")
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY) if SUPABASE_URL else None
 
 active_monitors = {}
-
-class MonitorCreate(BaseModel):
-    name: str
-    keywords: List[str]
-    location: str
-    interval_minutes: int = 15
-    telegram_token: str
-    telegram_chat_id: str
-    linkedin_cookie: str
-    user_id: str
 
 def send_telegram(token: str, chat_id: str, message: str):
     try:
@@ -65,9 +45,14 @@ def scan_linkedin(keyword: str, cookie: str):
 def monitor_worker(monitor_data: dict):
     monitor_id = monitor_data["id"]
     seen_posts = set()
-    send_telegram(monitor_data["telegram_token"], monitor_data["telegram_chat_id"],
-        f"🟢 <b>LinkedAlert Active!</b>\n\nMonitor: {monitor_data['name']}\nKeywords: {', '.join(monitor_data['keywords'])}\nLocation: {monitor_data['location']}")
+    print(f"Monitor started: {monitor_data['name']}")
+    send_telegram(
+        monitor_data["telegram_token"],
+        monitor_data["telegram_chat_id"],
+        f"🟢 <b>LinkedAlert Active!</b>\n\nMonitor: {monitor_data['name']}\nKeywords: {', '.join(monitor_data['keywords'])}\nLocation: {monitor_data['location']}\n\nScanning every {monitor_data['interval_minutes']} minutes..."
+    )
     while monitor_id in active_monitors and active_monitors[monitor_id]["running"]:
+        print(f"Scanning: {monitor_data['name']}")
         for keyword in monitor_data["keywords"]:
             try:
                 data = scan_linkedin(keyword, monitor_data["linkedin_cookie"])
@@ -82,24 +67,86 @@ def monitor_worker(monitor_data: dict):
                     name = item.get("headerText", {}).get("text", "Unknown")
                     title = item.get("title", {}).get("text", "")[:300]
                     subtitle = item.get("primarySubtitle", {}).get("text", "")
-                    msg = f"🚨 <b>New Post!</b>\n\n👤 <b>{name}</b>\n💼 {subtitle}\n🔍 {keyword}\n📝 {title}\n🔗 <a href='{post_url}'>View Post</a>"
+                    msg = (
+                        f"🚨 <b>New LinkedIn Post Found!</b>\n\n"
+                        f"👤 <b>Name:</b> {name}\n"
+                        f"💼 <b>Title:</b> {subtitle}\n"
+                        f"🔍 <b>Keyword:</b> {keyword}\n"
+                        f"📝 <b>Post:</b> {title}...\n"
+                        f"📍 <b>Location:</b> {monitor_data['location']}\n"
+                        f"⏰ <b>Time:</b> {datetime.now().strftime('%d %b %Y, %I:%M %p')}"
+                    )
+                    if post_url:
+                        msg += f"\n🔗 <a href='{post_url}'>View Post</a>"
                     send_telegram(monitor_data["telegram_token"], monitor_data["telegram_chat_id"], msg)
                     if supabase:
-                        supabase.table("alerts").insert({"monitor_id": monitor_id, "user_id": monitor_data["user_id"], "name": name, "keyword": keyword, "post_text": title, "post_url": post_url, "created_at": datetime.now().isoformat()}).execute()
+                        supabase.table("alerts").insert({
+                            "monitor_id": monitor_id,
+                            "user_id": monitor_data["user_id"],
+                            "name": name,
+                            "keyword": keyword,
+                            "post_text": title,
+                            "post_url": post_url,
+                            "created_at": datetime.now().isoformat()
+                        }).execute()
             except Exception as e:
-                print(f"Error: {e}")
-        for _ in range(monitor_data.get("interval_minutes", 15) * 60):
+                print(f"Scan error {keyword}: {e}")
+        interval = monitor_data.get("interval_minutes", 15) * 60
+        for _ in range(interval):
             if monitor_id not in active_monitors or not active_monitors[monitor_id]["running"]:
                 break
             time.sleep(1)
+    print(f"Monitor stopped: {monitor_id}")
+
+def restore_monitors():
+    if not supabase:
+        return
+    try:
+        print("Restoring active monitors...")
+        result = supabase.table("monitors").select("*").eq("status", "active").execute()
+        for monitor_data in result.data:
+            monitor_id = monitor_data["id"]
+            if isinstance(monitor_data.get("keywords"), str):
+                monitor_data["keywords"] = json.loads(monitor_data["keywords"])
+            if monitor_id not in active_monitors:
+                active_monitors[monitor_id] = {"running": True, "data": monitor_data}
+                thread = threading.Thread(target=monitor_worker, args=(monitor_data,), daemon=True)
+                thread.start()
+                print(f"Restored: {monitor_data['name']}")
+    except Exception as e:
+        print(f"Restore error: {e}")
+
+@asynccontextmanager
+async def lifespan(app):
+    print("Starting LinkedAlert API v2...")
+    t = threading.Thread(target=restore_monitors, daemon=True)
+    t.start()
+    yield
+    print("Shutting down...")
+
+app = FastAPI(title="LinkedAlert API", lifespan=lifespan)
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=False,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+class MonitorCreate(BaseModel):
+    name: str
+    keywords: List[str]
+    location: str
+    interval_minutes: int = 15
+    telegram_token: str
+    telegram_chat_id: str
+    linkedin_cookie: str
+    user_id: str
 
 @app.get("/")
 def root():
-    return {"status": "LinkedAlert API running", "version": "1.0.0"}
-
-@app.options("/{rest_of_path:path}")
-async def options_handler(rest_of_path: str):
-    return {"status": "ok"}
+    return {"status": "LinkedAlert API running", "version": "2.0.0"}
 
 @app.post("/monitors")
 def create_monitor(monitor: MonitorCreate):
@@ -137,4 +184,4 @@ def get_alerts(user_id: str):
 
 @app.get("/health")
 def health():
-    return {"status": "healthy", "active_monitors": len(active_monitors)}
+    return {"status": "healthy", "active_monitors": len(active_monitors), "version": "2.0.0"}
