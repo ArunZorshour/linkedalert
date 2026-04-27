@@ -19,6 +19,17 @@ supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY) if SUPABASE_URL els
 
 active_monitors = {}
 
+INFLUENCER_KEYWORDS = [
+    'influencer', 'content creator', 'ugc', 'brand collaboration',
+    'creator', 'social media', 'brand deal', 'paid promotion',
+    'brand ambassador', 'sponsored', 'collab', 'collaboration',
+    'influencer marketing', 'micro influencer', 'nano influencer'
+]
+
+def is_relevant_post(text: str) -> bool:
+    text_lower = text.lower()
+    return any(kw in text_lower for kw in INFLUENCER_KEYWORDS)
+
 def send_telegram(token: str, chat_id: str, message: str):
     try:
         url = f"https://api.telegram.org/bot{token}/sendMessage"
@@ -68,6 +79,8 @@ def monitor_worker(monitor_data: dict):
                     name = item.get("headerText", {}).get("text", "Unknown")
                     title = item.get("title", {}).get("text", "")[:300]
                     subtitle = item.get("primarySubtitle", {}).get("text", "")
+                    if not is_relevant_post(title):
+                        continue
                     msg = (
                         f"🚨 <b>New LinkedIn Post Found!</b>\n\n"
                         f"👤 <b>Name:</b> {name}\n"
@@ -173,6 +186,8 @@ async def apify_webhook(request: Request):
         if supabase:
             monitors = supabase.table("monitors").select("*").eq("status", "active").execute().data
             seen = set()
+            relevant_count = 0
+
             for post in posts[:20]:
                 author = post.get("author", {})
                 name = author.get("name", "Unknown") if isinstance(author, dict) else "Unknown"
@@ -181,10 +196,16 @@ async def apify_webhook(request: Request):
                 search_query = post.get("searchQuery", {})
                 keyword = search_query.get("query", "") if isinstance(search_query, dict) else ""
 
+                # Filter irrelevant posts
+                if not is_relevant_post(text):
+                    print(f"Skipping irrelevant post: {name}")
+                    continue
+
                 uid = hashlib.md5(str(post_url).encode()).hexdigest()
                 if uid in seen:
                     continue
                 seen.add(uid)
+                relevant_count += 1
 
                 msg = (
                     f"🚨 <b>New LinkedIn Post!</b>\n\n"
@@ -211,6 +232,8 @@ async def apify_webhook(request: Request):
                             "post_url": post_url,
                             "created_at": datetime.now().isoformat()
                         }).execute()
+
+            print(f"Relevant posts sent: {relevant_count}")
 
         return {"status": "ok", "posts_processed": len(posts)}
     except Exception as e:
